@@ -864,8 +864,51 @@ RSpec.describe Mysql2::Client do # rubocop:disable Metrics/BlockLength
   end
 
   context "escape" do
-    it "should raise a RuntimeError directing users to use the instance method" do
-      expect { Mysql2::Client.escape("abc'def") }.to raise_error(RuntimeError, /not safe/)
+    it "should return a new SQL-escape version of the passed string" do
+      expect(Mysql2::Client.escape("abc'def\"ghi\0jkl%mno")).to eql("abc\\'def\\\"ghi\\0jkl%mno")
+    end
+
+    it "should return the passed string if nothing was escaped" do
+      str = "plain"
+      expect(Mysql2::Client.escape(str).object_id).to eql(str.object_id)
+    end
+
+    it "should not overflow the thread stack" do
+      expect do
+        Thread.new { Mysql2::Client.escape("'" * 256 * 1024) }.join
+      end.not_to raise_error
+    end
+
+    it "should not overflow the process stack" do
+      expect do
+        Thread.new { Mysql2::Client.escape("'" * 1024 * 1024 * 4) }.join
+      end.not_to raise_error
+    end
+
+    it "should carry over the original string's encoding" do
+      str = "abc'def\"ghi\0jkl%mno".dup
+      escaped = Mysql2::Client.escape(str)
+      expect(escaped.encoding).to eql(str.encoding)
+
+      str.encode!('us-ascii')
+      escaped = Mysql2::Client.escape(str)
+      expect(escaped.encoding).to eql(str.encoding)
+    end
+
+    it "should raise Mysql2::Error for strings in unsafe multibyte encodings" do
+      %w[GBK GB2312 GB18030 Big5 Shift_JIS Windows-31J CP932].each do |enc_name|
+        begin
+          str = "abc".encode(enc_name)
+        rescue Encoding::ConverterNotFoundError, ArgumentError
+          next
+        end
+        expect { Mysql2::Client.escape(str) }.to raise_error(Mysql2::Error, /unsafe/)
+      end
+    end
+
+    it "should accept UTF-8 strings" do
+      str = "abc'def".dup.force_encoding("UTF-8")
+      expect(Mysql2::Client.escape(str)).to eql("abc\\'def")
     end
   end
 

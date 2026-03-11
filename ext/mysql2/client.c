@@ -420,20 +420,94 @@ static VALUE allocate(VALUE klass) {
   return obj;
 }
 
+/*
+ * mysql_escape_string() is vulnerable to multibyte SQL injection (CVE-2006-2753)
+ * only with character sets where 0x5c (backslash) can appear as a trailing byte
+ * of a multibyte character. Returns 1 if the Ruby string encoding is unsafe for
+ * connection-unaware escaping, 0 if safe.
+ *
+ * Unsafe encodings include GBK, GB2312, GB18030, Big5, Shift_JIS (and aliases
+ * CP932, Windows-31J, SJIS). UTF-8 is safe because continuation bytes are
+ * always 0x80-0xBF. All single-byte encodings are safe.
+ */
+static int rb_mysql_encoding_unsafe_for_escape(rb_encoding *enc) {
+  const char *name;
+
+  if (!enc) return 0;
+  name = rb_enc_name(enc);
+  if (!name) return 0;
+
+  /* Check for encodings where 0x5c can be a multibyte trailing byte.
+   * Comparison is case-insensitive and tolerant of hyphen/underscore differences. */
+  {
+    char normalized[32];
+    size_t i = 0;
+    const char *p = name;
+
+    while (*p && i < sizeof(normalized) - 1) {
+      char c = *p++;
+      if (c == '-' || c == '_') continue;
+      if (c >= 'A' && c <= 'Z') c += 32;
+      normalized[i++] = c;
+    }
+    normalized[i] = '\0';
+
+    if (strcmp(normalized, "gbk") == 0) return 1;
+    if (strcmp(normalized, "gb2312") == 0) return 1;
+    if (strcmp(normalized, "gb18030") == 0) return 1;
+    if (strcmp(normalized, "big5") == 0) return 1;
+    if (strcmp(normalized, "big5hkscs") == 0) return 1;
+    if (strcmp(normalized, "shiftjis") == 0) return 1;
+    if (strcmp(normalized, "sjis") == 0) return 1;
+    if (strcmp(normalized, "cp932") == 0) return 1;
+    if (strcmp(normalized, "windows31j") == 0) return 1;
+    if (strcmp(normalized, "macjapanese") == 0) return 1;
+    if (strcmp(normalized, "eucjpms") == 0) return 1; /* conservative */
+    if (strcmp(normalized, "cp51932") == 0) return 1; /* conservative */
+  }
+
+  return 0;
+}
+
 /* call-seq:
  *    Mysql2::Client.escape(string)
  *
- * This class-level method has been removed because it used mysql_escape_string()
- * which is not encoding-aware and is vulnerable to multibyte SQL injection
- * (CVE-2006-2753) when used with character sets like GBK or Shift_JIS.
- * Use the instance method Mysql2::Client#escape instead, which uses the
- * encoding-aware mysql_real_escape_string().
+ * Escape +string+ so that it may be used in a SQL statement.
+ * Note that this escape method is not connection encoding aware.
+ * It refuses strings in multibyte encodings where encoding-unaware escaping
+ * is unsafe (e.g. GBK, Big5, Shift_JIS) to prevent CVE-2006-2753.
+ * If you need full encoding support use Mysql2::Client#escape instead.
  */
 static VALUE rb_mysql_client_escape(RB_MYSQL_UNUSED VALUE klass, VALUE str) {
-  rb_raise(rb_eRuntimeError,
-    "Mysql2::Client.escape is not safe and has been removed. "
-    "Use an instance method Mysql2::Client#escape instead, which is encoding-aware.");
-  return Qnil;
+  unsigned char *newStr;
+  VALUE rb_str;
+  unsigned long newLen, oldLen;
+  rb_encoding *enc;
+
+  Check_Type(str, T_STRING);
+
+  enc = rb_enc_get(str);
+  if (rb_mysql_encoding_unsafe_for_escape(enc)) {
+    rb_raise(cMysql2Error,
+      "Mysql2::Client.escape is unsafe for strings encoded in %s. "
+      "Use the instance method Mysql2::Client#escape which is connection encoding aware.",
+      rb_enc_name(enc));
+  }
+
+  oldLen = RSTRING_LEN(str);
+  newStr = xmalloc(oldLen*2+1);
+
+  newLen = mysql_escape_string((char *)newStr, RSTRING_PTR(str), oldLen);
+  if (newLen == oldLen) {
+    /* no need to return a new ruby string if nothing changed */
+    xfree(newStr);
+    return str;
+  } else {
+    rb_str = rb_str_new((const char*)newStr, newLen);
+    rb_enc_copy(rb_str, str);
+    xfree(newStr);
+    return rb_str;
+  }
 }
 
 static VALUE rb_mysql_client_warning_count(VALUE self) {
