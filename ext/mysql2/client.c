@@ -423,31 +423,17 @@ static VALUE allocate(VALUE klass) {
 /* call-seq:
  *    Mysql2::Client.escape(string)
  *
- * Escape +string+ so that it may be used in a SQL statement.
- * Note that this escape method is not connection encoding aware.
- * If you need encoding support use Mysql2::Client#escape instead.
+ * This class-level method has been removed because it used mysql_escape_string()
+ * which is not encoding-aware and is vulnerable to multibyte SQL injection
+ * (CVE-2006-2753) when used with character sets like GBK or Shift_JIS.
+ * Use the instance method Mysql2::Client#escape instead, which uses the
+ * encoding-aware mysql_real_escape_string().
  */
 static VALUE rb_mysql_client_escape(RB_MYSQL_UNUSED VALUE klass, VALUE str) {
-  unsigned char *newStr;
-  VALUE rb_str;
-  unsigned long newLen, oldLen;
-
-  Check_Type(str, T_STRING);
-
-  oldLen = RSTRING_LEN(str);
-  newStr = xmalloc(oldLen*2+1);
-
-  newLen = mysql_escape_string((char *)newStr, RSTRING_PTR(str), oldLen);
-  if (newLen == oldLen) {
-    /* no need to return a new ruby string if nothing changed */
-    xfree(newStr);
-    return str;
-  } else {
-    rb_str = rb_str_new((const char*)newStr, newLen);
-    rb_enc_copy(rb_str, str);
-    xfree(newStr);
-    return rb_str;
-  }
+  rb_raise(rb_eRuntimeError,
+    "Mysql2::Client.escape is not safe and has been removed. "
+    "Use an instance method Mysql2::Client#escape instead, which is encoding-aware.");
+  return Qnil;
 }
 
 static VALUE rb_mysql_client_warning_count(VALUE self) {
